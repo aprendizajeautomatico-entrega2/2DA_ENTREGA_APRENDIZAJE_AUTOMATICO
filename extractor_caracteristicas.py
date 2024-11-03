@@ -18,6 +18,20 @@ color_ranges = {
     'Morado violeta': [(125, 50, 50), (135, 255, 255)],
 }
 
+# Definir características de formas de tubérculos
+shape_descriptors = {
+    'Formas del Tubérculo': {
+        'Comprimido': lambda ratio: ratio < 1,
+        'Esferico': lambda ratio: 0.9 <= ratio <= 1.1,
+        'Ovoide': lambda ratio, width_pos: 1 < ratio < 1.5 and width_pos < 1/3,
+        'Obovoide': lambda ratio, width_pos: 1 < ratio < 1.5 and width_pos > 2/3,
+        'Eliptico': lambda ratio: 1.1 <= ratio <= 1.5,
+        'Oblongo': lambda ratio: 1.5 < ratio <= 2,
+        'Largo-oblongo': lambda ratio: 1.8 < ratio <= 2.5,
+        'Alargado': lambda ratio: ratio > 2.5
+    }
+}
+
 class PotatoFeatureExtractor:
     def __init__(self, image_path, pixels_to_cm):
         self.image = cv2.imread(image_path)
@@ -60,12 +74,26 @@ class PotatoFeatureExtractor:
         return major_diameter / 2, minor_diameter / 2
 
     def shape_features(self):
+        rect = cv2.minAreaRect(self.contour)
+        width, height = rect[1]
+        ratio = height / width if width != 0 else 0
+        width_pos = 0.5 if height >= width else 1.0
+        
+        # Usar shape_descriptors para determinar la forma
+        shape_type = "Indefinido"
+        for shape, condition in shape_descriptors['Formas del Tubérculo'].items():
+            if shape in ["Ovoide", "Obovoide"]:
+                if condition(ratio, width_pos):
+                    shape_type = shape
+                    break
+            elif condition(ratio):
+                shape_type = shape
+                break
+        
+        # Calcular características adicionales de forma
         area = cv2.contourArea(self.contour)
         perimeter = cv2.arcLength(self.contour, True)
         
-        rect = cv2.minAreaRect(self.contour)
-        width = min(rect[1])
-        height = max(rect[1])
         aspect_ratio = width / height if height != 0 else 0
         roundness = (4 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
         elongation = 1 - roundness
@@ -73,7 +101,8 @@ class PotatoFeatureExtractor:
         return {
             'Aspect Ratio': aspect_ratio,
             'Roundness': roundness,
-            'Elongation': elongation
+            'Elongation': elongation,
+            'Shape Type': shape_type
         }
 
     def texture_features(self):
@@ -83,7 +112,7 @@ class PotatoFeatureExtractor:
         
         contrast = graycoprops(glcm, 'contrast')[0, 0]
         correlation = graycoprops(glcm, 'correlation')[0, 0]
-        energy = graycoprops(glcm, 'energy')[0, 0]  # Nueva característica de energía textural
+        energy = graycoprops(glcm, 'energy')[0, 0]
         
         haralick = mt.features.haralick(self.gray, return_mean=True)
         
@@ -124,7 +153,6 @@ class PotatoFeatureExtractor:
             major_diameter, minor_diameter = self.analyze_diameters()
             
             features = {
-                # 'Filename': self.filename,
                 'Predominant Color': predominant_color,
                 'Secondary Color': secondary_color,
                 'Major Diameter (cm)': major_diameter,
@@ -137,15 +165,17 @@ class PotatoFeatureExtractor:
             return features
         except Exception as e:
             print(f"Error extracting features from {self.filename}: {e}")
-            return None  # Retorna None si hay un error
+            return None
 
 def calculate_pixels_to_cm(reference_image_path, known_length_cm):
     img = cv2.imread(reference_image_path)
+    if img is None:
+        raise ValueError(f"Could not load reference image: {reference_image_path}")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if len(contours) == 0:
-        return None
+        raise ValueError("No contours detected in the reference image")
     contour = max(contours, key=cv2.contourArea)
     rect = cv2.minAreaRect(contour)
     reference_length_pixels = max(rect[1])
@@ -156,34 +186,27 @@ def process_directory(input_dir, output_csv, pixels_to_cm):
     for subfolder in Path(input_dir).iterdir():
         if subfolder.is_dir():
             variety = subfolder.name
-            for image_path in subfolder.glob('*.[jp][pn][g]'):
+            for image_path in subfolder.glob('*.[pjg][pn]g'):
                 try:
                     extractor = PotatoFeatureExtractor(str(image_path), pixels_to_cm)
                     features = extractor.extract_all_features()
-                    if features:  # Solo añade si features no es None
+                    if features is not None:
                         features['Variety'] = variety
                         features_list.append(features)
-                    else:
-                        print(f"No features extracted for {image_path}")
                 except Exception as e:
                     print(f"Error processing {image_path}: {e}")
-    
-    if features_list:  # Solo crea el DataFrame si hay características
-        df = pd.DataFrame(features_list)
-        df.to_csv(output_csv, index=False)
-        print(f"Features saved to: {output_csv}")
-    else:
-        print("No features were extracted. CSV not created.")
+    df = pd.DataFrame(features_list)
+    df.to_csv(output_csv, index=False)
 
-# Parámetros y ejecución
-reference_image_path = r'C:\Users\sheil\OneDrive\Documentos\semestre 24 II\papas limpias\papa_referencia.jpg'
-known_length_cm = 10  # Longitud conocida en centímetros
+if __name__ == "__main__":
+    reference_image_path = r'C:\documentos\semestre 24 II\aprendizaje\papa_referencia.jpg'
+    known_length_cm = 10
 
-input_directory = r'C:\Users\sheil\OneDrive\Documentos\semestre 24 II\papas limpias\try'  # Reemplazar con el directorio de entrada
-output_csv_path = r'C:\Users\sheil\OneDrive\Documentos\semestre 24 II\papas limpias\resultados_combi.csv'  # Nombre del archivo CSV de salida
+    input_directory = r'C:\documentos\semestre 24 II\aprendizaje\clasificacion_papas'
+    output_csv_file = r'C:\documentos\semestre 24 II\aprendizaje\caracteristicas_papas_parte3.csv'
 
-pixels_to_cm = calculate_pixels_to_cm(reference_image_path, known_length_cm)
-if pixels_to_cm is not None:
-    process_directory(input_directory, output_csv_path, pixels_to_cm)
-else:
-    print("No se pudo calcular la escala de píxeles a centímetros.")
+    try:
+        pixels_to_cm = calculate_pixels_to_cm(reference_image_path, known_length_cm)
+        process_directory(input_directory, output_csv_file, pixels_to_cm)
+    except ValueError as e:
+        print(e)
